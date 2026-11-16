@@ -1,0 +1,80 @@
+'use strict';
+(() => {
+const D=window.RESEARCH_DATA,$=s=>document.querySelector(s),NS='http://www.w3.org/2000/svg';
+const svg=$('#canvas'),world=$('#world'),map=$('#map'),fieldMap=Object.fromEntries(D.fields.map(f=>[f.id,f])),research=new Map(D.nodes.map(n=>[n.id,n]));
+const mobile=()=>innerWidth<=760,points=new Map(),elements=new Map(),edgeEls=[],conditionEls=[];let selected=null,era='all',activeField=null,frame=0,view={x:0,y:0,z:1},lastFocus=null,dragged=false,gesture=null;
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function el(tag,attrs={},parent){const e=document.createElementNS(NS,tag);for(const [k,v] of Object.entries(attrs))e.setAttribute(k,v);if(parent)parent.append(e);return e}
+const angles={military:Math.PI*1.25,arcane:Math.PI*1.75,economy:Math.PI*.75,technology:Math.PI*.25};
+const polar=(r,a)=>({x:Math.cos(a)*r,y:Math.sin(a)*r});
+const positions=new Map();
+for(const f of D.fields){
+ const a=angles[f.id];positions.set(f.id,{...polar(214,a),kind:'hub',id:f.id,name:f.name,field:f.id});
+ const groups=D.groups.filter(g=>g.field===f.id);let total=0;
+ for(const g of groups){g.weight=Math.max(1,...Array.from(new Set(D.nodes.filter(n=>n.group===g.id).map(n=>n.tier))).map(t=>D.nodes.filter(n=>n.group===g.id&&n.tier===t).length));total+=g.weight}
+ let offset=0;
+ for(const g of groups){g.start=a-.67+1.34*offset/total;g.span=1.34*g.weight/total;g.angle=a-.67+1.34*(groups.indexOf(g)+.5)/groups.length;offset+=g.weight;positions.set(g.id,{...polar(Math.max(510,groups.length*110/1.34),g.angle),kind:'category',id:g.id,name:g.name,field:f.id,group:g,era:g.era})}
+ let prev=Math.max(510,groups.length*110/1.34);
+ const maxTier=Math.max(...D.nodes.filter(n=>n.field===f.id).map(n=>n.tier));
+ for(let tier=1;tier<=maxTier;tier++){
+  const r=Math.max(prev+195,...groups.map(g=>D.nodes.filter(n=>n.group===g.id&&n.tier===tier).length*125/g.span));prev=r;
+  for(const g of groups){const ns=D.nodes.filter(n=>n.group===g.id&&n.tier===tier);ns.forEach((n,i)=>positions.set(n.id,{...polar(r,g.start+g.span*(i+.5)/ns.length),kind:'research',...n}))}
+ }
+}
+function allowed(n){return !n.era||era==='all'||(era==='early'?['중세','기초'].includes(n.era):['근대','성장'].includes(n.era))}
+function path(a,b){let dx=b.x-a.x,dy=b.y-a.y;return `M ${a.x} ${a.y} C ${a.x+dx*.55} ${a.y}, ${b.x-dx*.55} ${b.y}, ${b.x} ${b.y}`}
+for(const r of [310,510,900,1400,2000,3000])el('circle',{cx:0,cy:0,r,fill:'none',stroke:'#8d9aaf',opacity:.045,'stroke-width':1},$('#decor'));
+el('path',{d:'M -80 0 H 80 M 0 -80 V 80',stroke:'#bca77c',opacity:.2},$('#decor'));
+function addEdge(source,target,uncertain=false){const a=positions.get(source),b=positions.get(target);if(!a||!b)return;const e=el('path',{d:path(a,b),class:'edge'+(uncertain?' uncertain':''),stroke:fieldMap[b.field].color},$('#edges'));edgeEls.push({e,a,b})}
+for(const g of D.groups)addEdge(g.field,g.id);
+for(const n of D.nodes){if(n.prerequisites.length)n.prerequisites.forEach(p=>addEdge(p,n.id,n.notes.some(x=>/분기|합쳤|합류/.test(x))));else addEdge(n.group,n.id)}
+for(const link of D.conditionLinks){if(research.get(link.target).prerequisites.includes(link.source))continue;const a=positions.get(link.source),b=positions.get(link.target);const e=el('path',{d:path(a,b),class:'condition-edge '+link.type},$('#condition-edges'));conditionEls.push({e,a,b})}
+function wrap(text,width){let lines=[],line='';for(const word of text.split(' ')){if((line+' '+word).trim().length>width&&line){lines.push(line);line=''}if(word.length>width){if(line){lines.push(line);line=''}for(let i=0;i<word.length;i+=width)lines.push(word.slice(i,i+width))}else line+=(line?' ':'')+word}if(line)lines.push(line);return lines}
+for(const n of positions.values()){
+ const r=n.kind==='hub'?86:n.kind==='category'?45:51,f=fieldMap[n.field];
+ const g=el('g',{class:'node '+n.kind,transform:`translate(${n.x},${n.y})`,style:`--field:${f.color}`,role:'button',tabindex:'0','aria-label':n.name+(n.era?' · '+n.era:''),'data-id':n.id},$('#nodes'));
+ el('circle',{r:r+7,class:'outer'},g);el('circle',{r,class:'disc'},g);
+ if(n.kind==='hub'){const icon=el('text',{y:-13,class:'hub-icon'},g);icon.textContent=f.icon;const t=el('text',{y:30},g);t.textContent=n.name}else{
+ const lines=wrap(n.name,n.kind==='category'?5:7);const t=el('text',{},g);lines.forEach((line,i)=>{const s=el('tspan',{x:0,y:(i-(lines.length-1)/2)*20+5},t);s.textContent=line});
+ if(n.kind==='category'){const t=el('text',{y:72,style:'font-size:11px;fill:#8693a4'},g);t.textContent=n.era}}
+ g.addEventListener('click',e=>{if(dragged){e.preventDefault();return}activate(n.id)});
+ g.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();e.stopPropagation();activate(n.id)}});elements.set(n.id,g);
+}
+function viewport(){return {w:svg.clientWidth,h:svg.clientHeight}}
+function visible(n,w,h,margin=130){const x=n.x*view.z+view.x,y=n.y*view.z+view.y;return x>-margin&&y>-margin&&x<w+margin&&y<h+margin}
+function render(){frame=0;const {w,h}=viewport();world.setAttribute('transform',`translate(${view.x},${view.y}) scale(${view.z})`);$('#zoom').textContent=Math.round(view.z*100)+'%';for(const [id,g] of elements){const n=positions.get(id);g.style.display=allowed(n)&&visible(n,w,h)?'':'none'}for(const {e,a,b} of edgeEls)e.style.display=allowed(a)&&allowed(b)?'':'none';for(const {e,a,b} of conditionEls)e.style.display=allowed(a)&&allowed(b)&&($('#show-links').checked||(selected&&(a.id===selected||b.id===selected)))?'':'none'}
+function request(){if(!frame)frame=requestAnimationFrame(render)}
+function center(x,y,z=1){const {w,h}=viewport();const left=mobile()?0:300;view={x:left+(w-left)/2-x*z,y:h/2-y*z,z};request()}
+function home(){activeField=null;center(0,0,mobile()?Math.min(.9,(viewport().w-32)/490):.75);updateField();$('#position-label').textContent='네 학문의 중심'}
+function fit(){const ps=[...positions.values()].filter(allowed),minX=Math.min(...ps.map(n=>n.x))-110,maxX=Math.max(...ps.map(n=>n.x))+110,minY=Math.min(...ps.map(n=>n.y))-110,maxY=Math.max(...ps.map(n=>n.y))+110;const {w,h}=viewport();center((minX+maxX)/2,(minY+maxY)/2,Math.max(.045,Math.min((w-(mobile()?30:350))/(maxX-minX),(h-170)/(maxY-minY))));$('#position-label').textContent='전체 지도 · 확대하여 연구 이름 확인'}
+function zoomAt(x,y,factor){const z=Math.min(2.5,Math.max(.045,view.z*factor)),ratio=z/view.z;view.x=x-(x-view.x)*ratio;view.y=y-(y-view.y)*ratio;view.z=z;request()}
+function go(id){const n=positions.get(id);if(!allowed(n)){era='all';$('#era').value=era}center(n.x,n.y,mobile()?1.05:1);if(!$('#detail').hidden){if(mobile())view.y=150-n.y*view.z;else view.x-=150;}$('#position-label').textContent=fieldMap[n.field].name+' / '+n.name;request()}
+function focusField(id){activeField=id;updateField();const f=fieldMap[id];const candidates=D.nodes.filter(n=>n.field===id&&allowed(n)),first=candidates[0];if(first){const p=positions.get(first.id);center(p.x*.76,p.y*.76,mobile()?.95:.78)}else{const p=positions.get(id);center(p.x,p.y,.95)}$('#position-label').textContent=f.name+' 연구 영역';closeDetail(false)}
+function updateField(){document.querySelectorAll('.field-button').forEach(b=>{b.classList.toggle('active',b.dataset.field===activeField);b.setAttribute('aria-pressed',String(b.dataset.field===activeField))})}
+function activate(id){const n=positions.get(id);if(n.kind==='hub'){showCategory(n);return}if(n.kind==='category'){showCategory(n);return}showResearch(id)}
+function openPanel(n){lastFocus=document.activeElement;$('#detail').hidden=false;$('#detail').style.setProperty('--field',fieldMap[n.field].color);$('#detail').scrollTop=0;$('#close-detail').focus({preventScroll:true})}
+function setHighlight(id){selected=id;const related=new Set(id?[id]:[]);if(id){const visit=p=>{const n=research.get(p);if(!n)return;for(const x of n.prerequisites)if(!related.has(x)){related.add(x);visit(x)}};visit(id);D.conditionLinks.filter(l=>l.target===id||l.source===id).forEach(l=>{related.add(l.source);related.add(l.target)});D.nodes.filter(n=>n.prerequisites.includes(id)).forEach(n=>related.add(n.id))}for(const [nid,g] of elements){g.classList.toggle('selected',nid===id);g.classList.toggle('dim',!!id&&!related.has(nid))}for(const {e,a,b} of edgeEls){e.classList.toggle('focus',!!id&&related.has(a.id)&&related.has(b.id));e.classList.toggle('dim',!!id&&!(related.has(a.id)&&related.has(b.id)))}request()}
+const refs=ids=>ids.map(id=>{const n=positions.get(id);return `<button class="ref-button" data-ref="${id}">${esc(n.name)} <span>↗</span></button>`}).join('');
+function wireRefs(){document.querySelectorAll('[data-ref]').forEach(b=>b.onclick=()=>{const id=b.dataset.ref;activate(id);go(id)});document.querySelectorAll('[data-jump]').forEach(b=>b.onclick=()=>{const id=b.dataset.jump;closeDetail(false);if(fieldMap[id])focusField(id);else go(id)})}
+function showResearch(id){const n=research.get(id),f=fieldMap[n.field];openPanel(n);setHighlight(id);const children=D.nodes.filter(x=>x.prerequisites.includes(id));const reqs=D.conditionLinks.filter(l=>l.target===id&&!n.prerequisites.includes(l.source));
+$('#detail-content').innerHTML=`<div class="detail-path">${esc(f.name)} / ${esc(n.category)}</div><div class="detail-symbol">${f.icon}</div><h2>${esc(n.name)}</h2><div class="chips"><span class="chip">${esc(n.era)}</span><span class="chip">TIER ${n.tier} · ${n.tierSource}</span><span class="chip">열람 전용</span></div><section class="detail-section"><h3>연구 효과</h3><p>${n.effects?esc(n.effects).replace(/\n/g,'<br>'):'미정 / 미공개 (효과 자료 미제공)'}</p></section><section class="detail-section"><h3>선행 연구 · 원문 경로</h3>${n.prerequisites.length?refs(n.prerequisites):'<p>표기된 선행 연구 없음</p>'}${n.prerequisites.length>1?'<p>합류 경로입니다. AND / OR 여부는 원문 확인이 필요합니다.</p>':''}</section><section class="detail-section"><h3>특수 해금 조건</h3>${n.conditions.length?'<ul>'+n.conditions.map(c=>`<li>${esc(c)}</li>`).join('')+'</ul>':'<p>미정 / 미공개</p>'}${reqs.length?'<p>조건에 등장하는 연구로 이동</p>'+refs([...new Set(reqs.map(l=>l.source))]):''}</section>${children.length?'<section class="detail-section"><h3>후속 연구</h3>'+refs(children.map(x=>x.id))+'</section>':''}<section class="detail-section"><h3>자료 기록</h3><p>연구 ID ${n.id}<br>${n.tierSource==='원문 명시'?'티어는 원문에 명시된 값을 반영했습니다.':'티어는 경로 순서에서 추정한 단계입니다. 확정된 게임 티어는 미공개입니다.'}</p>${n.notes.map(note=>'<div class="data-note">확인 필요 · '+esc(note)+'</div>').join('')}</section>`;wireRefs();$('#status').textContent=n.name+' 상세 정보 열림'}
+function showCategory(n){openPanel(n);setHighlight(null);const groups=n.kind==='hub'?D.groups.filter(g=>g.field===n.id):[n.group];$('#detail-content').innerHTML=`<div class="detail-path">RESEARCH DISCIPLINE</div><div class="detail-symbol">${fieldMap[n.field].icon}</div><h2>${esc(n.name)}</h2><p class="detail-path">${n.era||'모든 시대'} · ${D.nodes.filter(x=>n.kind==='hub'?x.field===n.id:x.group===n.id).length}개 연구</p><section class="detail-section"><h3>연구 가지 탐색</h3>${groups.map(g=>`<p>${esc(g.era)} / ${esc(g.name)}</p>${refs(D.nodes.filter(x=>x.group===g.id&&x.prerequisites.length===0).map(x=>x.id))}`).join('')}</section><button class="ref-button" data-jump="${n.id}">이 영역으로 이동 <span>↗</span></button>`;wireRefs()}
+function closeDetail(restore=true){$('#detail').hidden=true;setHighlight(null);if(restore&&lastFocus&&lastFocus.isConnected)lastFocus.focus({preventScroll:true})}
+D.fields.forEach(f=>{const b=document.createElement('button');b.className='field-button';b.dataset.field=f.id;b.style.setProperty('--field',f.color);b.innerHTML=`<span class="glyph">${f.icon}</span>${f.name}<small>${D.nodes.filter(n=>n.field===f.id).length} 연구 ↗</small>`;b.onclick=()=>focusField(f.id);$('#fields').append(b)});
+$('#count').textContent=D.nodes.length+' RESEARCHES';$('#notice').textContent=D.notice;
+$('#home').onclick=home;$('.brand').onclick=e=>{e.preventDefault();home()};$('#fit').onclick=fit;$('#plus').onclick=()=>{const {w,h}=viewport();zoomAt(w/2,h/2,1.25)};$('#minus').onclick=()=>{const {w,h}=viewport();zoomAt(w/2,h/2,.8)};$('#close-detail').onclick=()=>closeDetail();$('#show-links').onchange=request;$('#era').onchange=e=>{era=e.target.value;closeDetail(false);if(activeField)focusField(activeField);else request()};$('#help').onclick=()=>$('#help-dialog').showModal();$('#close-help').onclick=()=>$('#help-dialog').close();
+const search=$('#search'),results=$('#results');search.oninput=()=>{const q=search.value.trim().replace(/\s/g,'');results.hidden=!q;if(!q)return;const matches=D.nodes.filter(n=>n.name.replace(/\s/g,'').includes(q)||Object.entries(D.aliases).some(([a,b])=>b===n.name&&a.replace(/\s/g,'').includes(q)));results.innerHTML=matches.length?matches.slice(0,40).map(n=>`<button data-result="${n.id}">${esc(n.name)}<small>${fieldMap[n.field].name} · ${n.era} · ${n.category}</small></button>`).join(''):'<p>일치하는 연구가 없습니다.</p>';results.querySelectorAll('button').forEach(b=>b.onclick=()=>{results.hidden=true;search.blur();showResearch(b.dataset.result);go(b.dataset.result)})};search.onkeydown=e=>{if(e.key==='ArrowDown'){e.preventDefault();results.querySelector('button')?.focus()}if(e.key==='Escape')results.hidden=true};document.addEventListener('pointerdown',e=>{if(!results.contains(e.target)&&e.target!==search)results.hidden=true});
+function local(e){const r=svg.getBoundingClientRect();return {x:e.clientX-r.left,y:e.clientY-r.top}}
+function baseline(){const ps=[...points.values()];if(ps.length>=2){const a=ps[0],b=ps[1];gesture={type:'pinch',cx:(a.x+b.x)/2,cy:(a.y+b.y)/2,d:Math.hypot(a.x-b.x,a.y-b.y),view:{...view}}}else if(ps.length){gesture={type:'pan',start:ps[0],view:{...view}}}else gesture=null}
+svg.addEventListener('pointerdown',e=>{if(e.button!==0&&e.pointerType==='mouse')return;if(!points.size)dragged=false;points.set(e.pointerId,local(e));svg.setPointerCapture(e.pointerId);baseline();if(points.size>1)dragged=true});
+svg.addEventListener('pointermove',e=>{if(!points.has(e.pointerId)||!gesture)return;const p=local(e);points.set(e.pointerId,p);if(gesture.type==='pan'){const dx=p.x-gesture.start.x,dy=p.y-gesture.start.y;if(Math.hypot(dx,dy)>6)dragged=true;if(dragged){view.x=gesture.view.x+dx;view.y=gesture.view.y+dy}}else{const [a,b]=[...points.values()];if(!b)return;const cx=(a.x+b.x)/2,cy=(a.y+b.y)/2,d=Math.hypot(a.x-b.x,a.y-b.y),v=gesture.view,z=Math.min(2.5,Math.max(.045,v.z*d/Math.max(gesture.d,1)));view={x:cx-(gesture.cx-v.x)*z/v.z,y:cy-(gesture.cy-v.y)*z/v.z,z}}if(dragged)svg.classList.add('dragging');request()});
+function end(e){points.delete(e.pointerId);if(svg.hasPointerCapture(e.pointerId))svg.releasePointerCapture(e.pointerId);baseline();if(!points.size)svg.classList.remove('dragging')}
+// Pointer capture retargets click: preserve the original node for a true tap.
+let tapTarget=null;svg.addEventListener('pointerdown',e=>{if(points.size===1)tapTarget=e.target.closest('[data-id]')?.dataset.id||null});
+svg.addEventListener('pointerup',e=>{const tap=!dragged&&points.size===1;end(e);if(tap&&tapTarget){activate(tapTarget);dragged=true}tapTarget=null});
+svg.addEventListener('pointercancel',e=>{dragged=true;tapTarget=null;end(e)});svg.addEventListener('lostpointercapture',e=>{if(points.has(e.pointerId)){points.delete(e.pointerId);dragged=true;baseline()}});
+svg.addEventListener('wheel',e=>{e.preventDefault();const p=local(e);zoomAt(p.x,p.y,Math.exp(-Math.max(-120,Math.min(120,e.deltaY))*.002))},{passive:false});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeDetail();results.hidden=true;return}if(e.target.matches('input,select,textarea,button')||$('#help-dialog').open)return;if(e.key==='/'){e.preventDefault();search.focus();return}const moves={ArrowLeft:[80,0],ArrowRight:[-80,0],ArrowUp:[0,80],ArrowDown:[0,-80]};if(moves[e.key]){e.preventDefault();view.x+=moves[e.key][0];view.y+=moves[e.key][1];request()}if(e.key==='Home'){e.preventDefault();home()}if(['+','=','-'].includes(e.key)){e.preventDefault();const {w,h}=viewport();zoomAt(w/2,h/2,e.key==='-'?.8:1.25)}});
+let size=viewport();new ResizeObserver(()=>{const next=viewport();view.x+=(next.w-size.w)/2;view.y+=(next.h-size.h)/2;size=next;request()}).observe(map);
+home();
+})();
